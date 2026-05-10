@@ -313,11 +313,37 @@ def build_summary_table(df: pd.DataFrame, off_hours_threshold: int) -> pd.DataFr
 
 
 def style_summary_table(summary_df: pd.DataFrame) -> pd.io.formats.style.Styler:
-    return (
-        summary_df.style.background_gradient(subset=["overloaded_dts"], cmap="OrRd")
-        .background_gradient(subset=["unbalanced_dts"], cmap="YlGnBu")
-        .background_gradient(subset=["high_off_hours_dts"], cmap="YlOrBr")
-    )
+    return summary_df.style
+
+
+def _loading_style(value: float) -> str:
+    if pd.isna(value):
+        return ""
+    if value >= 100:
+        return "font-weight: 800; color: #7a2412; background-color: #ffd8c7;"
+    if value >= 80:
+        return "font-weight: 700; color: #8b5e00; background-color: #fff1bf;"
+    return ""
+
+
+def _unbalance_style(value: float) -> str:
+    if pd.isna(value):
+        return ""
+    if value > 0.30:
+        return "font-weight: 800; color: #0c3b5c; background-color: #d9eefc;"
+    if value > 0.20:
+        return "font-weight: 700; color: #245f7a; background-color: #eaf7ff;"
+    return ""
+
+
+def _probability_style(value: float) -> str:
+    if pd.isna(value):
+        return ""
+    if value >= 70:
+        return "font-weight: 800; color: #7a2412; background-color: #ffd8c7;"
+    if value >= 45:
+        return "font-weight: 700; color: #8b5e00; background-color: #fff1bf;"
+    return "font-weight: 600; color: #1e5d41; background-color: #e0f3e8;"
 
 
 def style_detail_table(detail_df: pd.DataFrame) -> pd.io.formats.style.Styler:
@@ -331,15 +357,9 @@ def style_detail_table(detail_df: pd.DataFrame) -> pd.io.formats.style.Styler:
                 "predicted_failure_probability": "{:.2f}%",
             }
         )
-        .background_gradient(subset=["dt_loading"], cmap="YlOrRd")
-        .background_gradient(subset=["max_unbalance"], cmap="YlGnBu")
-        .background_gradient(subset=["predicted_failure_probability"], cmap="RdYlGn_r")
-        .map(
-            lambda value: "font-weight: 800; color: #7a2412; background-color: #ffd8c7;"
-            if pd.notna(value) and value >= 70
-            else ("font-weight: 700; color: #8b5e00; background-color: #fff1bf;" if pd.notna(value) and value >= 45 else ""),
-            subset=["predicted_failure_probability"],
-        )
+        .map(_loading_style, subset=["dt_loading"])
+        .map(_unbalance_style, subset=["max_unbalance"])
+        .map(_probability_style, subset=["predicted_failure_probability"])
     )
 
 
