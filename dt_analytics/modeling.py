@@ -6,25 +6,20 @@ import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 ENTITY_DESCRIPTOR_COLUMNS = [
-    "zone",
     "circle",
-    "division",
-    "subdivision",
-    "substation",
-    "feeder_name",
     "dt_code",
     "dt_meter_number",
     "dt_name",
-    "hes",
-    "mf",
     "kva_rating",
 ]
+
+MAX_MODEL_TRAIN_ROWS = 12000
 
 
 @dataclass
@@ -144,9 +139,36 @@ def _build_model_pipeline(numeric_features: list[str], categorical_features: lis
     return Pipeline(
         steps=[
             ("preprocessor", preprocessor),
-            ("classifier", LogisticRegression(max_iter=1000, class_weight="balanced")),
+            (
+                "classifier",
+                SGDClassifier(
+                    loss="log_loss",
+                    class_weight="balanced",
+                    max_iter=1000,
+                    tol=1e-3,
+                    random_state=42,
+                ),
+            ),
         ]
     )
+
+
+def _downsample_training_frame(train_df: pd.DataFrame) -> pd.DataFrame:
+    if len(train_df) <= MAX_MODEL_TRAIN_ROWS:
+        return train_df
+
+    sample_fraction = MAX_MODEL_TRAIN_ROWS / float(len(train_df))
+    sampled_parts: list[pd.DataFrame] = []
+    for _, group in train_df.groupby(["target_period_date", "future_failure_proxy"], dropna=False):
+        sample_size = max(1, int(round(len(group) * sample_fraction)))
+        sampled_parts.append(group.sample(n=min(len(group), sample_size), random_state=42))
+
+    sampled = pd.concat(sampled_parts, ignore_index=True)
+
+    if len(sampled) > MAX_MODEL_TRAIN_ROWS:
+        sampled = sampled.sample(n=MAX_MODEL_TRAIN_ROWS, random_state=42).reset_index(drop=True)
+
+    return sampled
 
 
 def attach_failure_predictions(
@@ -154,6 +176,7 @@ def attach_failure_predictions(
     *,
     allow_train_without_holdout: bool = False,
     training_scope_label: str = "historical panel",
+    score_period: str | None = None,
 ) -> PredictionResult:
     if df.empty:
         return PredictionResult(
@@ -166,7 +189,11 @@ def attach_failure_predictions(
         )
 
     features = _prepare_features(df)
-    scored = features.copy()
+    scored = (
+        features[features["period"] == score_period].copy()
+        if score_period is not None
+        else features.copy()
+    )
 
     numeric_features = [
         "kva_rating",
@@ -198,10 +225,10 @@ def attach_failure_predictions(
         "rolling3_power_off_mean",
         "history_row_count",
     ]
-    categorical_features = ["zone", "circle", "division", "subdivision", "month_name"]
+    categorical_features = ["circle", "division"]
 
     heuristic_probability = _heuristic_probability(scored)
-    labeled = scored[scored["future_failure_proxy"].notna()].copy()
+    labeled = features[features["future_failure_proxy"].notna()].copy()
 
     if labeled["future_failure_proxy"].nunique() < 2 or len(labeled) < 200:
         scored["predicted_failure_probability"] = heuristic_probability
@@ -260,7 +287,9 @@ def attach_failure_predictions(
             validation_auc=None,
         )
 
-    model.fit(train_df[numeric_features + categorical_features], train_df["future_failure_proxy"])
+    fit_train_df = _downsample_training_frame(train_df)
+
+    model.fit(fit_train_df[numeric_features + categorical_features], fit_train_df["future_failure_proxy"])
     scored["predicted_failure_probability"] = model.predict_proba(
         scored[numeric_features + categorical_features]
     )[:, 1]
@@ -276,23 +305,21 @@ def attach_failure_predictions(
             "Supervised next-year same-month proxy model trained with time-separated holdout periods. "
             "All lag features use only the current and earlier months to avoid data leakage."
         ),
-        training_rows=int(len(train_df)),
-        positive_rows=int(train_df["future_failure_proxy"].sum()),
+        training_rows=int(len(fit_train_df)),
+        positive_rows=int(fit_train_df["future_failure_proxy"].sum()),
         validation_auc=float(validation_auc),
     )
 
 
 def attach_failure_predictions_for_period(df: pd.DataFrame, score_period: str) -> PredictionResult:
-    score_month = int(str(score_period).split("-")[1])
-    same_month_df = df[df["month"] == score_month].copy()
     same_month_result = attach_failure_predictions(
-        same_month_df,
+        df,
         allow_train_without_holdout=True,
         training_scope_label="same-calendar-month historical",
+        score_period=score_period,
     )
-    scoped = same_month_result.scored_df[same_month_result.scored_df["period"] == score_period].copy()
     return PredictionResult(
-        scored_df=scoped,
+        scored_df=same_month_result.scored_df,
         method=same_month_result.method,
         detail=(
             "Prediction uses only past available data from the same calendar month across years for next-year same-month forecasting. "

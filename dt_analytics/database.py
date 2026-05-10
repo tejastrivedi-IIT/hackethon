@@ -88,6 +88,7 @@ def init_db(db_path: str | Path = DB_PATH) -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_dt_health_period ON dt_monthly_health (period);
+            CREATE INDEX IF NOT EXISTS idx_dt_health_month ON dt_monthly_health (month);
             CREATE INDEX IF NOT EXISTS idx_dt_health_circle ON dt_monthly_health (circle);
             CREATE INDEX IF NOT EXISTS idx_dt_health_division ON dt_monthly_health (division);
             CREATE INDEX IF NOT EXISTS idx_dt_health_subdivision ON dt_monthly_health (subdivision);
@@ -152,6 +153,70 @@ def fetch_period_data(period: str, db_path: str | Path = DB_PATH) -> pd.DataFram
             connection,
             params=(period,),
             parse_dates=["maximum_kva_date", "imported_at"],
+        )
+
+
+def fetch_month_history_data(month: int, db_path: str | Path = DB_PATH) -> pd.DataFrame:
+    init_db(db_path)
+    with get_connection(db_path) as connection:
+        return pd.read_sql_query(
+            """
+            SELECT *
+            FROM dt_monthly_health
+            WHERE month = ?
+            ORDER BY year DESC, circle, division, subdivision, dt_code, source_row_number
+            """,
+            connection,
+            params=(int(month),),
+            parse_dates=["maximum_kva_date", "imported_at"],
+        )
+
+
+def fetch_month_model_data(month: int, db_path: str | Path = DB_PATH) -> pd.DataFrame:
+    init_db(db_path)
+    with get_connection(db_path) as connection:
+        return pd.read_sql_query(
+            """
+            SELECT
+                period,
+                year,
+                month,
+                source_row_number,
+                circle,
+                division,
+                subdivision,
+                dt_code,
+                dt_meter_number,
+                dt_name,
+                kva_rating,
+                kwh,
+                kvah,
+                power_factor,
+                avg_kva,
+                maximum_kva,
+                r_phase_max_current,
+                y_phase_max_current,
+                b_phase_max_current,
+                unbalance_ry,
+                unbalance_yb,
+                unbalance_br,
+                max_unbalance,
+                dt_loading,
+                load_factor,
+                utilization_factor,
+                loading_status_score,
+                unbalance_status_score,
+                total_hours,
+                power_off_hours,
+                power_on_hours,
+                power_off_ratio,
+                criticality_score
+            FROM dt_monthly_health
+            WHERE month = ?
+            ORDER BY year DESC, circle, division, subdivision, dt_code, source_row_number
+            """,
+            connection,
+            params=(int(month),),
         )
 
 
