@@ -6,17 +6,59 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from dt_analytics.config import DB_PATH, EXPORT_COLUMNS
+from dt_analytics.config import BASE_DIR, DB_PATH, EXPORT_COLUMNS
 from dt_analytics import database as db
 from dt_analytics import modeling as mdl
+from dt_analytics.processing import load_excel_data, normalize_monthly_dataframe
+from dt_analytics.synthetic import generate_and_append_synthetic_history
 
 
 st.set_page_config(page_title="DT Health Command Center", layout="wide")
 
+BOOTSTRAP_REAL_FILES = [
+    "DT Health Report May-2025.xlsx",
+    "DT Health Report June-2025.xlsx",
+]
+
 def get_db_signature() -> tuple[str, int]:
     path = Path(DB_PATH)
+    if not path.exists():
+        return str(path.resolve()), 0
     stat = path.stat()
     return str(path.resolve()), stat.st_mtime_ns
+
+
+def bootstrap_synthetic_months() -> list[tuple[int, int]]:
+    months: list[tuple[int, int]] = []
+    for year in (2023, 2024):
+        for month in range(1, 13):
+            months.append((year, month))
+    for month in [1, 2, 3, 4, 7, 8, 9, 10, 11, 12]:
+        months.append((2025, month))
+    for month in range(1, 5):
+        months.append((2026, month))
+    return months
+
+
+def ensure_database_ready() -> None:
+    db.init_db(DB_PATH)
+    if not db.fetch_import_history(DB_PATH).empty:
+        return
+
+    missing_files = [name for name in BOOTSTRAP_REAL_FILES if not (BASE_DIR / name).exists()]
+    if missing_files:
+        missing_text = ", ".join(missing_files)
+        raise FileNotFoundError(
+            f"Bundled bootstrap files are missing from the app repository: {missing_text}"
+        )
+
+    for file_name in BOOTSTRAP_REAL_FILES:
+        file_path = BASE_DIR / file_name
+        raw_df = load_excel_data(file_path)
+        monthly_df = normalize_monthly_dataframe(raw_df, file_path)
+        db.replace_period_data(monthly_df, DB_PATH)
+
+    generate_and_append_synthetic_history(DB_PATH, months_to_generate=bootstrap_synthetic_months())
 
 
 @st.cache_data(show_spinner=False)
@@ -432,6 +474,9 @@ def render_summary_button_grid(summary_df: pd.DataFrame) -> None:
 
 def main() -> None:
     inject_styles()
+
+    with st.spinner("Preparing dashboard data for this deployment..."):
+        ensure_database_ready()
 
     if "detail_view" not in st.session_state:
         st.session_state["detail_view"] = None
