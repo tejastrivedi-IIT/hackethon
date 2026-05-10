@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from dt_analytics.config import BASE_DIR, DB_PATH, EXPORT_COLUMNS
 from dt_analytics import database as db
@@ -73,11 +72,15 @@ def load_period_dashboard_data(period: str, _db_signature: tuple[str, int]) -> p
 
 @st.cache_data(show_spinner=False)
 def load_period_predictions(period: str, _db_signature: tuple[str, int]) -> tuple[pd.DataFrame, dict]:
-    df = db.fetch_all_data(DB_PATH)
+    month = int(str(period).split("-")[1])
+    df = db.fetch_month_model_data(month, DB_PATH)
     result = mdl.attach_failure_predictions_for_period(df, period)
+    prediction_df = result.scored_df[
+        ["period", "source_row_number", "prediction_target_period", "predicted_failure_probability", "prediction_method"]
+    ].copy()
     info = {
         "method": result.method,
-        "model_name": "Logistic Regression Classifier (same-calendar-month historical model)"
+        "model_name": "SGD Logistic Regression Classifier (same-calendar-month historical model)"
         if result.method == "model"
         else "Stress-score heuristic",
         "detail": result.detail,
@@ -85,7 +88,7 @@ def load_period_predictions(period: str, _db_signature: tuple[str, int]) -> tupl
         "positive_rows": result.positive_rows,
         "validation_auc": result.validation_auc,
     }
-    return result.scored_df, info
+    return prediction_df, info
 
 
 def inject_styles() -> None:
@@ -410,7 +413,7 @@ def extract_selected_rows(selection_event) -> list[int]:
 
 
 def scroll_to_detail_section() -> None:
-    components.html(
+    st.html(
         """
         <script>
         const tryScroll = () => {
@@ -422,7 +425,8 @@ def scroll_to_detail_section() -> None:
         setTimeout(tryScroll, 80);
         </script>
         """,
-        height=0,
+        width="content",
+        unsafe_allow_javascript=True,
     )
 
 
@@ -580,7 +584,14 @@ def main() -> None:
         st.markdown('<div id="detail-section"></div>', unsafe_allow_html=True)
         scroll_to_detail_section()
         with st.spinner("Preparing prediction view for the selected month..."):
-            prediction_period_df, model_info = load_period_predictions(selected_period, db_signature)
+            prediction_scores_df, model_info = load_period_predictions(selected_period, db_signature)
+
+        prediction_period_df = period_df.merge(
+            prediction_scores_df,
+            on=["period", "source_row_number"],
+            how="left",
+            validate="1:1",
+        )
 
         prediction_filtered = prediction_period_df.copy()
         if filter_info["selected_circle"] != "All":
@@ -628,7 +639,7 @@ def main() -> None:
                 f'<div class="section-card"><div class="section-title">{detail_title}</div><div class="subtle">Prediction column is color-highlighted so high-risk rows stand out immediately.</div></div>',
                 unsafe_allow_html=True,
             )
-            st.dataframe(style_detail_table(display_df), use_container_width=True, hide_index=True)
+            st.dataframe(style_detail_table(display_df), width="stretch", hide_index=True)
             st.download_button(
                 label="Download current detail view as CSV",
                 data=dataframe_download_bytes(detail_df[EXPORT_COLUMNS]),
@@ -669,7 +680,7 @@ def main() -> None:
     with st.expander("Imported Periods and Data Basis"):
         st.dataframe(
             import_history[["period", "month_year_label", "row_count", "imported_at"]],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
